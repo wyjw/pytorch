@@ -70,6 +70,13 @@ void div_kernel(TensorIterator& iter) {
   }
 }
 
+void logical_xor_kernel(TensorIterator& iter) {
+  cpu_kernel(iter,
+    [](bool a, bool b) -> bool {
+      return a != b;
+    });
+}
+
 } // anonymous namespace
 
 
@@ -77,5 +84,6 @@ REGISTER_DISPATCH(add_stub, &add_kernel);
 REGISTER_DISPATCH(sub_stub, &sub_kernel);
 REGISTER_DISPATCH(mul_stub, &mul_kernel);
 REGISTER_DISPATCH(div_stub, &div_kernel);
+REGISTER_DISPATCH(logical_xor_stub, &logical_xor_kernel);
 
 }} // namespace at::native
