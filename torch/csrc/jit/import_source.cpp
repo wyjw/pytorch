@@ -61,6 +61,10 @@ struct TORCH_API ClassNamespaceValue : public SugaredValue {
       }
     }
 
+    if (auto fn = cu_.find_function(fullName)) {
+      return std::make_shared<FunctionValue>(fn);
+    }
+
     return std::make_shared<ClassNamespaceValue>(std::move(fullName), cu_);
   }
   std::string kind() const override {
@@ -180,16 +184,24 @@ struct SourceImporter {
     while (L.cur().kind != TK_EOF) {
       parseImportsAndDoCallback();
 
-      auto parsed_treeref = p_.parseClassLike();
-      if (parsed_treeref->kind() == TK_CLASS_DEF) {
-        importClass(qualifier, ClassDef(parsed_treeref));
-      } else if (parsed_treeref->kind() == TK_NAMED_TUPLE_DEF) {
-        importNamedTuple(qualifier, NamedTupleDef(parsed_treeref));
-      } else {
-        TORCH_INTERNAL_ASSERT(
-            false,
-            "Got an unrecognized type from "
-            "parseClassLike");
+      auto tk = L.cur();
+      auto kind = tk.kind;
+      switch (kind) {
+        case TK_CLASS_DEF: {
+          auto parsed_treeref = p_.parseClassLike();
+          importClass(qualifier, ClassDef(parsed_treeref));
+        } break;
+        case TK_NAMED_TUPLE_DEF: {
+          auto parsed_treeref = p_.parseClassLike();
+          importNamedTuple(qualifier, NamedTupleDef(parsed_treeref));
+        } break;
+        case TK_DEF: {
+          auto parsed_treeref = p_.parseFunction(/*is_method=*/false);
+          importFunction(qualifier, Def(parsed_treeref));
+        } break;
+        default:
+          throw ErrorReport(L.cur().range)
+              << "Unexpected token in code import: " << kindToString(kind);
       }
     }
   }
@@ -211,6 +223,12 @@ struct SourceImporter {
   }
 
  private:
+  void importFunction(const std::string& qualifier, const Def& def) {
+    std::vector<Def> definitions{def};
+    std::vector<ResolverPtr> resolvers{resolver_};
+    cu_->define(qualifier, definitions, resolvers, nullptr);
+  }
+
   void importClass(const std::string& qualifier, const ClassDef& class_def) {
     bool is_module = class_def.superclass().present();
     if (is_module &&

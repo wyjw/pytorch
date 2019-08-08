@@ -247,8 +247,13 @@ struct PythonPrintPass {
   std::vector<c10::NamedTypePtr>& deps_table_;
   // Helper to avoid duplicating class types
   void registerDependency(const c10::NamedTypePtr& type) {
-    if (std::find(deps_table_.cbegin(), deps_table_.cend(), type) ==
-        deps_table_.cend()) {
+    // Need to do actual equality comparison, not a pointer equality.
+    auto it = std::find_if(
+        deps_table_.cbegin(),
+        deps_table_.cend(),
+        [&](const c10::NamedTypePtr dep) { return *dep == *type; });
+
+    if (it == deps_table_.cend()) {
       deps_table_.push_back(type);
     }
   }
@@ -937,6 +942,10 @@ struct PythonPrintPass {
         stmt << "uninitialized(" << node->output()->type()->python_str() << ")";
       } break;
       case prim::Constant: {
+        if (node->outputs().size() == 1 &&
+            node->output()->type()->kind() == TypeKind::FunctionType) {
+          break;
+        }
         if (node->kind() == prim::Constant && !node->mustBeNone()) {
           IValue v = toIValue(node->output()).value();
           printConstant(stmt, v);
@@ -1028,6 +1037,33 @@ struct PythonPrintPass {
           printQuotedString(field_stream, field);
           stmt << field_stream.str() << ")";
         }
+      } break;
+      case prim::CallFunction: {
+        const auto& fn = node->inputs().at(0)->type()->expect<FunctionType>();
+        registerDependency(fn);
+
+        stmt << fn->name()->qualifiedName() << "(";
+        for (size_t i = 1; i < node->inputs().size(); i++) {
+          stmt << useOf(node->inputs()[i]) << ", ";
+        }
+        stmt << ")";
+      } break;
+      case prim::CallMethod: {
+        const auto& self = node->inputs().at(0);
+        const auto& selfType = self->type()->expect<ClassType>();
+        const auto& methodName = node->s(attr::name);
+        const auto method = selfType->getMethod(node->s(attr::name));
+        registerDependency(selfType);
+
+        TORCH_INTERNAL_ASSERT(
+            method->qualname() ==
+            QualifiedName(selfType->name()->qualifiedName(), methodName));
+
+        stmt << useOf(self) << "." << methodName << "(";
+        for (size_t i = 1; i < node->inputs().size(); i++) {
+          stmt << useOf(node->inputs()[i]) << ", ";
+        }
+        stmt << ")";
       } break;
       default: {
         Symbol kind = node->kind();
@@ -1301,12 +1337,18 @@ void PythonPrint(
 void PythonPrint(
     std::ostream& out,
     SourceRangeRecords& source_ranges_out,
-    const c10::NamedTypePtr& classType,
+    const c10::NamedTypePtr& type,
     std::vector<at::Tensor>& tensor_table,
     std::vector<c10::NamedTypePtr>& deps_table,
     bool enforce_importable) {
   PythonPrintPass pp(tensor_table, deps_table, enforce_importable, true);
-  pp.printClass(classType);
+  if (type->cast<TupleType>() || type->cast<ClassType>()) {
+    pp.printClass(type);
+  } else {
+    auto f = type->cast<FunctionType>();
+    TORCH_INTERNAL_ASSERT(f);
+    pp.printFunction(*f->function());
+  }
   pp.print(out, source_ranges_out);
 }
 
@@ -1347,6 +1389,7 @@ bool printerHasSpecialCaseFor(Symbol sym) {
       prim::CreateObject,
       prim::GetAttr,
       prim::SetAttr,
+      prim::CallFunction,
   };
 
   // WARNING: by adding a value to this set, you are asserting that your
