@@ -4,7 +4,7 @@ import unittest
 import torch
 import torch.nn.quantized as nnq
 from torch.quantization import \
-    quantize, prepare, convert, prepare_qat, quantize_qat, fuse_modules
+    quantize, prepare, convert, prepare_qat, quantize_qat, fuse_modules, MinMaxObserver
 
 from common_utils import run_tests, TEST_WITH_UBSAN
 from common_quantization import QuantizationTestCase, SingleLayerLinearModel, \
@@ -339,6 +339,26 @@ class FusionTest(QuantizationTestCase):
         self.assertEqual(type(testMod.sub2.bn), torch.nn.BatchNorm2d,
                          "Non-fused submodule BN")
 
+class ObserverTest(QuantizationTestCase):
+    def test_minmax_observer(self):
+        myobs_quint8 = MinMaxObserver(dtype=torch.quint8, qscheme=torch.per_tensor_affine)
+        x = torch.tensor([1.0, 2.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+        y = torch.tensor([4.0, 5.0, 5.0, 6.0, 7.0, 8.0])
+        myobs_quint8(x)
+        myobs_quint8(y)
+        self.assertEqual(myobs_quint8.min_val, 1.0)
+        self.assertEqual(myobs_quint8.max_val, 8.0)
+        qparams = myobs_quint8.calculate_qparams()
+        self.assertAlmostEqual(qparams[0].item(), 0.0313725, delta=1e-5)
+        self.assertEqual(qparams[1].item(), 0.0)
 
+        myobs_qint8 = MinMaxObserver(dtype=torch.qint8, qscheme=torch.per_tensor_affine)
+        myobs_qint8(x)
+        myobs_qint8(y)
+        self.assertEqual(myobs_qint8.min_val, 1.0)
+        self.assertEqual(myobs_qint8.max_val, 8.0)
+        qparams = myobs_qint8.calculate_qparams()
+        self.assertAlmostEqual(qparams[0].item(), 0.0313725, delta=1e-5)
+        self.assertEqual(qparams[1].item(), -128)
 if __name__ == '__main__':
     run_tests()
